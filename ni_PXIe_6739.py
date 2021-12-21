@@ -125,7 +125,7 @@ class DAQ:
         self._ensure_task_is_stopped()
         if self.verbose: print("%s: closing..."%self.name, end='')
         dll.clear_task(self.task_handle)
-        if self.verbose: print("%s: done."%self.name)
+        if self.verbose: print(" done.")
         return None
 
 ### Tidy and store DLL calls away from main program:
