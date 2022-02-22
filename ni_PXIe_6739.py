@@ -10,30 +10,22 @@ class DAQ:
     def __init__(
         self, name='NI-DAQ-6739', num_channels=64, rate=1e4, verbose=True):
         self.name = name
-        assert 1 <= num_channels <= 64
         self.num_channels = num_channels
-        self.max_rate = 1e6
+        self.rate = rate
         self.verbose = verbose
         if self.verbose: print("%s: opening..."%self.name)
-        self._task_running = False
-        self.task_handle = C.c_void_p(0)
-        dll.create_task(bytes(), self.task_handle)
+        assert 1 <= num_channels <= 64
+        self.max_rate = 1e6
         board_name = 'PXI1Slot2' # check with NI MAX
-        device_name = bytes(
+        self.device_name = bytes(
             board_name + '/ao0:%i'%(self.num_channels - 1), 'ascii')
-        dll.create_ao_voltage_channel(
-            self.task_handle,
-            device_name,
-            b"",
-            -10,    # Minimum voltage
-            +10.0,  # Maximum voltage
-            10348,  # DAQmx_Val_Volts = conversion factor
-            None)   # NULL
-        self.board_name = board_name
+        self.task_handle = C.c_void_p(0)
+        self.num_points_written = C.c_int32(0)
+        self._prepare_to_write_voltages()
+        self._task_running = False
+        self._task_loaded = False
         self.voltages = np.zeros((2, self.num_channels), 'float64')
-        self.set_rate(rate)
-        self._write_voltages(self.voltages)
-        self.play_voltages(force_final_zeros=False, block=True)
+        self.set_rate(self.rate) # requires self.voltages.shape[0]
         if self.verbose: print("%s: opened and ready.\n"%self.name)
 
     def s2p(self, seconds): # convert time in seconds to ao 'pixels'
@@ -73,8 +65,21 @@ class DAQ:
         if self.verbose: print("%s: playing voltages..."%self.name)
         dll.start_task(self.task_handle)
         self._task_running = True
+        self._task_loaded = False
         if block:
             self._ensure_task_is_stopped()
+        return None
+
+    def _prepare_to_write_voltages(self):
+        dll.create_task(bytes(), self.task_handle)
+        dll.create_ao_voltage_channel(
+            self.task_handle,
+            self.device_name,
+            b"",
+            -10,    # Minimum voltage
+            +10.0,  # Maximum voltage
+            10348,  # DAQmx_Val_Volts = conversion factor
+            None)   # NULL
         return None
 
     def _write_voltages(self, voltages, force_final_zeros=True):
@@ -90,11 +95,13 @@ class DAQ:
             voltages[-1, :] = 0
         old_voltages_shape = self.voltages.shape
         self.voltages = voltages
-        if self.voltages.shape[0] != old_voltages_shape[0]:
-            self.set_rate(self.rate) # must update sample number if changed
-        if not hasattr(self, 'num_points_written'):
-            self.num_points_written = C.c_int32(0)
         self._ensure_task_is_stopped()
+        if self._task_loaded:        # must clear previously written voltages
+            dll.clear_task(self.task_handle)
+            self._prepare_to_write_voltages()
+            self.set_rate(self.rate)
+        elif self.voltages.shape[0] != old_voltages_shape[0]:
+            self.set_rate(self.rate) # must update sample number if changed
         dll.write_voltages(
             self.task_handle,
             self.voltages.shape[0], # Samples per channel
@@ -107,6 +114,7 @@ class DAQ:
         if self.verbose:
             print("\n%s: -> %i points written to each channel."%(
                 self.name, self.num_points_written.value))
+        self._task_loaded = True
         return None
 
     def _ensure_task_is_stopped(self):
